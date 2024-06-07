@@ -1,12 +1,11 @@
-module double_dabble_tb;
-
+module double_dabble_tb();
     initial begin
         $dumpfile("double_dabble.vcd");
         $dumpvars(0, double_dabble_tb);
     end
 
     reg clock, reset;
-    wire[31:0] bin = 32'd1234567;
+    wire[31:0] bin = 32'd2;
     integer i;
     wire[39:0] bcd;
     wire done;

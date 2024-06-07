@@ -12,7 +12,7 @@ module double_dabble #(
         BCD_BITS = NUM_DIGITS * 4,
         SCRATCH_WIDTH = WIDTH_IN + BCD_BITS;
 
-        reg[SCRATCH_WIDTH-1:0] scratch = 0;
+    reg[SCRATCH_WIDTH-1:0] scratch = 0;
     reg[$clog2(WIDTH_IN):0] cycle_count = 0;
 
     // add3 modules

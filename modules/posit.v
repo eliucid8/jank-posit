@@ -1,106 +1,122 @@
-// We only need to count up to 31 leading zeroes bc highest bit is sign bit and thus not counted.
-// Binary searches for the number of leading zeroes.
-// Should be tested...
-module clz31(
-    output[4:0] leading_zeroes,
-    input[30:0] num 
+module decompose_posit #(
+    parameter NBITS = 16,
+    parameter ES = 1
+) (
+    output sign,
+    output[$clog2(NBITS):0] regime, // + 1 so we can get both positives and negatives.
+    output[ES-1:0] exponent,
+    output[NBITS-4-ES:0] mantissa, // -1 by default, -1 for sign, -2 for minimum regime length
+    input[NBITS-1:0] posit
 );
-    wire lz4 = ~|{num[30:15]};          // If top 16 bits are all 0, add 16 (set 4th bit of leading_zeroes to 1s)
-    wire[30:0] num4 = lz4 ? num << 16 : num;  // and then shift input over by 16
-    wire lz3 = ~|{num4[30:23]};
-    wire[30:0] num3 = lz3 ? num4 << 8 : num4;
-    wire lz2 = ~|{num3[30:27]};
-    wire[30:0] num2 = lz2 ? num3 << 4 : num3;
-    wire lz1 = ~|{num2[30:29]};
-    wire[30:0] num1 = lz1 ? num2 << 2 : num2;
-    wire lz0 = ~num1[30];
-    assign leading_zeroes = {lz4, lz3, lz2, lz1, lz0};
+    assign sign = posit[NBITS-1];
+    // use 2s complement of posit if sign bit is 1.
+    wire[NBITS-2:0] posit_comp = sign ? ~posit[NBITS-2:0] + 1 : posit[NBITS-2:0];
+
+    wire[$clog2(NBITS) - 1:0] leading_zeroes, leading_ones, leading;
+    clz15 clz(.leading_zeroes(leading_zeroes), .num(posit_comp[NBITS-2:0]));
+    clo15 clo(.leading_ones(leading_ones), .num(posit_comp[NBITS-2:0]));
+
+    // 2s complement number giving the regime value.
+    assign regime = leading_ones != 0 ? leading_ones - 1: ~leading_zeroes + 1;
+    wire[$clog2(NBITS)-1:0] regime_length = leading_ones != 0 ? leading_ones + 1 : leading_zeroes + 1;
+
+    wire[NBITS-2:0] exp_remaining = posit_comp << regime_length;
+    assign exponent = exp_remaining[NBITS-2:NBITS-1-ES];
+    assign mantissa = exp_remaining[NBITS-2-ES:2];
 endmodule
 
-// replaced all the nors with ands.
-module clo31(
-    output[4:0] leading_ones,
-    input[30:0] num 
+module split_radix_point #(
+    parameter NBITS = 16,
+    parameter ES = 1
+) (
+    output[(1<<ES)*(NBITS-1)-1:0] whole,
+    output[(1<<ES)*(NBITS-1)-1:0] fraction,
+    input[$clog2(NBITS):0] regime,
+    input[ES-1:0] exponent,
+    input[NBITS-4-ES:0] mantissa
 );
-    wire lz4 = &{num[30:15]};          // If top 16 bits are all 0, add 16 (set 4th bit of leading_zeroes to 1s)
-    wire[30:0] num4 = lz4 ? num << 16 : num;  // and then shift input over by 16
-    wire lz3 = &{num4[30:23]};
-    wire[30:0] num3 = lz3 ? num4 << 8 : num4;
-    wire lz2 = &{num3[30:27]};
-    wire[30:0] num2 = lz2 ? num3 << 4 : num3;
-    wire lz1 = &{num2[30:29]};
-    wire[30:0] num1 = lz1 ? num2 << 2 : num2;
-    wire lz0 = num1[30];
-    assign leading_ones = {lz4, lz3, lz2, lz1, lz0};
+    localparam 
+        USEED = 1<<(1<<ES),
+        OUTPUT_WIDTH = (1<<ES)*(NBITS-1),
+        MANTISSA_WIDTH = NBITS-3-ES,
+        REGIME_INPUT_WIDTH = $clog2(NBITS)+1;
+
+    wire[2*OUTPUT_WIDTH-1:0] pre_shift, post_shift;
+    assign pre_shift = {{(OUTPUT_WIDTH-1){1'b0}}, 1'b1, mantissa, {(OUTPUT_WIDTH-MANTISSA_WIDTH){1'b0}}};
+
+    wire shift_left = ~regime[REGIME_INPUT_WIDTH-1];
+    wire[REGIME_INPUT_WIDTH:0] lshamt = (regime<<ES)+exponent;
+    wire[REGIME_INPUT_WIDTH:0] rshamt = -lshamt;
+    assign post_shift = 
+        shift_left ? 
+        pre_shift << lshamt :
+        pre_shift >> rshamt;
+    
+    assign whole = post_shift[2*OUTPUT_WIDTH-1:OUTPUT_WIDTH];
+    assign fraction = post_shift[OUTPUT_WIDTH-1:0];
 endmodule
 
-module clz15(
-    output[3:0] leading_zeroes,
-    input[14:0] num 
+module display_posit16 (
+    output[39:0] whole_bcd, frac_bcd,
+    input[15:0] posit,
+    input clock,
+    input reset
 );
-    wire lz3 = ~|{num[14:7]};
-    wire[14:0] num3 = lz3 ? num << 8 : num;
-    wire lz2 = ~|{num3[14:11]};
-    wire[14:0] num2 = lz2 ? num3 << 4 : num3;
-    wire lz1 = ~|{num2[14:13]};
-    wire[14:0] num1 = lz1 ? num2 << 2 : num2;
-    wire lz0 = ~num1[14];
-    assign leading_zeroes = {lz3, lz2, lz1, lz0};
+    localparam
+        NBITS = 16,
+        ES = 1,
+        MANTISSA_WIDTH = 12,
+        REGIME_WIDTH = 5,
+        SPLIT_WIDTH = (1<<ES)*(NBITS-1),
+        FRAC_ADD_CYCLES = SPLIT_WIDTH;
+
+    wire sign;
+    wire[4:0] regime;
+    wire exponent;
+    wire[11:0] mantissa;
+    decompose_posit #(.NBITS(16), .ES(1)) dec_pos(
+        .sign(sign), .regime(regime), .exponent(exponent), .mantissa(mantissa),
+        .posit(posit));
+
+    wire[SPLIT_WIDTH-1:0] whole, frac;
+    split_radix_point #(.NBITS(NBITS), .ES(ES)) srp(
+        .whole(whole), .fraction(frac),
+        .regime(regime), .exponent(exponent), .mantissa(mantissa));
+
+    wire frac_add_done;
+    double_dabble #(SPLIT_WIDTH) whole_dd(
+        .bcd(whole_bcd),
+        .bin(whole), .clock(clock), .reset(reset));
+
+    reg[32:0] frac_dec_lut [29:0]; // lookup table for decimal representations of fractional values
+    reg[5:0] dec_lut_index;
+    reg[33:0] frac_accumulator;
+
+    initial begin
+        dec_lut_index <= 0;
+        frac_accumulator <= 0;
+        $readmemh("memfiles/decimal.mem", frac_dec_lut, 0, 29);
+    end
+
+    always @(posedge clock) begin
+        if(reset) begin
+            dec_lut_index <= 0;
+            frac_accumulator <= 0;
+            // $display("  %b  %b", whole, frac);
+        end else begin
+            if(dec_lut_index <= FRAC_ADD_CYCLES) begin // basically building edge detector in.
+                if(dec_lut_index != FRAC_ADD_CYCLES && frac[29 - dec_lut_index]) begin
+                    frac_accumulator <= frac_accumulator + frac_dec_lut[dec_lut_index];
+                end
+                dec_lut_index <= dec_lut_index + 1;
+            end
+        end
+    end
+    assign frac_add_done = (dec_lut_index == FRAC_ADD_CYCLES);
+
+    double_dabble #(33) frac_dd(
+        .bcd(frac_bcd),
+        .bin(frac_accumulator), .clock(clock), .reset(frac_add_done || reset)
+    );
+
 endmodule
-
-// replaced all the nors with ands.
-module clo15(
-    output[3:0] leading_ones,
-    input[14:0] num 
-);
-    wire lz3 = &{num[14:7]};
-    wire[14:0] num3 = lz3 ? num << 8 : num;
-    wire lz2 = &{num3[14:11]};
-    wire[14:0] num2 = lz2 ? num3 << 4 : num3;
-    wire lz1 = &{num2[14:13]};
-    wire[14:0] num1 = lz1 ? num2 << 2 : num2;
-    wire lz0 = num1[14];
-    assign leading_ones = {lz3, lz2, lz1, lz0};
-endmodule
-
-// module clo31_tb();
-//     reg[30:0] i = 0;
-//     wire[4:0] leading;
-//     clo31 clo(.leading_ones(leading), .num(i));
-//     integer j;
-
-//     initial begin
-//         #1;
-//         $display("%b: %d", i, leading);
-//         i = (1 << 30);
-//         for(j = 0; j < 32; j = j + 1) begin
-//             #1;
-//             $display("%b: %d", i, leading);
-//             i = {i[30], i[30:1]};
-//         end
-//         $finish;
-//     end
-// endmodule
-
-// module clz31_tb();
-//     reg[30:0] i = 0;
-//     wire[4:0] leading_zeroes;
-//     clz31 clz(.leading_zeroes(leading_zeroes), .num(i));
-
-//     initial begin
-//         #1;
-//         $display("%b: %d", i, leading_zeroes);
-
-//         for(i = 1; i != 0; i = i << 1) begin
-//             #1;
-//             $display("%b: %d", i, leading_zeroes);
-//         end
-
-//         for(i = 17; i != 0; i = i << 1) begin
-//             #1;
-//             $display("%b: %d", i, leading_zeroes);
-//         end
-
-//         $finish;
-//     end
-// endmodule

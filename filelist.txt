@@ -1,3 +1,4 @@
-posit_tb.v
-posit.v
-double_dabble.v
+modules/posit_tb.v
+modules/posit.v
+modules/count_leading.v
+modules/double_dabble.v
